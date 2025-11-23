@@ -3,15 +3,37 @@ class ChessApp {
         this.socket = io();
         this.gameId = null;
         this.playerColor = null;
+        this.playerId = this.getPlayerId();
         this.selectedPiece = null;
         this.validMoves = [];
         this.board = [];
-        this.lastMoveTime = Date.now();
         this.isPaused = false;
         
         this.initializeEventListeners();
         this.initializeSocketListeners();
         this.renderTimeControls();
+        
+        // Intentar restaurar sesión previa
+        this.restorePreviousSession();
+    }
+
+    getPlayerId() {
+        let playerId = localStorage.getItem('chessPlayerId');
+        if (!playerId) {
+            playerId = 'player_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('chessPlayerId', playerId);
+        }
+        return playerId;
+    }
+
+    restorePreviousSession() {
+        const savedGameId = localStorage.getItem('currentGameId');
+        if (savedGameId && this.playerId) {
+            this.socket.emit('restoreSession', {
+                playerId: this.playerId,
+                gameId: savedGameId
+            });
+        }
     }
 
     initializeEventListeners() {
@@ -26,14 +48,20 @@ class ChessApp {
         // Crear partida
         document.getElementById('create-game-btn').addEventListener('click', () => {
             const timeControl = this.getSelectedTimeControl();
-            this.socket.emit('createGame', timeControl);
+            this.socket.emit('createGame', {
+                timeControl: timeControl,
+                playerId: this.playerId
+            });
         });
 
         // Unirse a partida
         document.getElementById('join-game-btn').addEventListener('click', () => {
             const gameId = document.getElementById('game-id-input').value.trim().toUpperCase();
             if (gameId.length === 6) {
-                this.socket.emit('joinGame', gameId);
+                this.socket.emit('joinGame', {
+                    gameId: gameId,
+                    playerId: this.playerId
+                });
             } else {
                 this.showMessage('ID de partida inválido', 'error');
             }
@@ -61,94 +89,275 @@ class ChessApp {
     }
 
     initializeSocketListeners() {
-        this.socket.on('gameCreated', (data) => {
-            this.gameId = data.gameId;
-            this.playerColor = data.color;
-            this.showGameScreen();
-            document.getElementById('current-game-id').textContent = this.gameId;
-            document.getElementById('game-info').classList.remove('hidden');
-            this.showMessage(`Partida creada! ID: ${this.gameId}`, 'success');
+    this.socket.on('sessionRestored', (data) => {
+        this.gameId = data.gameId;
+        this.playerColor = data.color;
+        this.gameState = data.gameState; // ← GUARDAR EL ESTADO DEL JUEGO
+        this.showGameScreen();
+        this.board = data.gameState.board;
+        this.renderBoard();
+        this.updateTimes(data.gameState.whiteTime, data.gameState.blackTime);
+        this.updateGameStatus('Sesión restaurada');
+        this.updateTurnIndicator(data.gameState.currentTurn);
+        this.highlightCheck(data.gameState.isCheck); // ← ACTUALIZAR JAQUE
+        this.showMessage('Sesión restaurada exitosamente', 'success');
+    });
+
+    this.socket.on('gameCreated', (data) => {
+        this.gameId = data.gameId;
+        this.playerColor = data.color;
+        localStorage.setItem('currentGameId', this.gameId);
+        this.showGameScreen();
+        document.getElementById('current-game-id').textContent = this.gameId;
+        document.getElementById('game-info').classList.remove('hidden');
+        this.showMessage(`Partida creada! ID: ${this.gameId}`, 'success');
+    });
+
+    this.socket.on('gameJoined', (data) => {
+        this.gameId = data.gameId;
+        this.playerColor = data.color;
+        localStorage.setItem('currentGameId', this.gameId);
+        this.showGameScreen();
+        this.showMessage('Te has unido a la partida', 'success');
+    });
+
+    this.socket.on('gameStart', (data) => {
+        this.board = data.board;
+        this.gameState = data; // ← GUARDAR EL ESTADO DEL JUEGO
+        this.renderBoard();
+        this.updateTimes(data.whiteTime, data.blackTime);
+        this.updateGameStatus(`Partida iniciada - Turno de ${data.currentTurn === 'white' ? 'Blancas' : 'Negras'}`);
+        this.updateTurnIndicator(data.currentTurn);
+        this.highlightCheck(data.isCheck);
+    });
+
+    this.socket.on('moveMade', (data) => {
+        this.board = data.board;
+        this.gameState = data; // ← GUARDAR EL ESTADO DEL JUEGO
+        this.renderBoard();
+        this.updateTimes(data.whiteTime, data.blackTime);
+        this.updateTurnIndicator(data.currentTurn);
+        this.highlightCheck(data.isCheck);
+        
+        if (data.gameOver) {
+            this.handleGameOver(data.winner, data.reason);
+        } else {
+            this.updateGameStatus(`Turno de ${data.currentTurn === 'white' ? 'Blancas' : 'Negras'}`);
+        }
+    });
+
+    this.socket.on('validMoves', (data) => {
+        this.validMoves = data.moves;
+        this.highlightValidMoves();
+    });
+
+    this.socket.on('playerReconnected', (data) => {
+        this.showMessage(`Jugador de ${data.color === 'white' ? 'blancas' : 'negras'} reconectado`, 'info');
+    });
+
+    this.socket.on('playerDisconnected', (data) => {
+        this.showMessage(`El oponente (${data.color === 'white' ? 'blancas' : 'negras'}) se ha desconectado`, 'error');
+        this.isPaused = true;
+    });
+
+    // En initializeSocketListeners(), verifica que tienes este listener:
+    this.socket.on('timeUpdate', (data) => {
+        this.updateTimes(data.whiteTime, data.blackTime);
+        
+        if (data.gameOver) {
+            this.handleGameOver(data.winner, 'time');
+        }
+    });
+
+    this.socket.on('gameOver', (data) => {
+        this.handleGameOver(data.winner, data.reason);
+    });
+
+    this.socket.on('invalidMove', (data) => {
+        this.showMessage(`Movimiento inválido: ${data.reason}`, 'error');
+        this.selectedPiece = null;
+        this.validMoves = [];
+        this.clearHighlights();
+    });
+
+    this.socket.on('error', (message) => {
+        this.showMessage(message, 'error');
+    });
+
+    this.socket.on('gamePaused', () => {
+        this.isPaused = true;
+        document.getElementById('pause-btn').classList.add('hidden');
+        document.getElementById('resume-btn').classList.remove('hidden');
+        this.showMessage('Juego pausado', 'info');
+    });
+
+    this.socket.on('gameResumed', () => {
+        this.isPaused = false;
+        document.getElementById('pause-btn').classList.remove('hidden');
+        document.getElementById('resume-btn').classList.add('hidden');
+        this.showMessage('Juego reanudado', 'info');
+    });
+}
+
+    // Nuevo método para obtener movimientos válidos
+    getValidMoves(position) {
+        if (this.gameId && position) {
+            this.socket.emit('getValidMoves', {
+                gameId: this.gameId,
+                position: position,
+                playerId: this.playerId
+            });
+        }
+    }
+
+    handlePieceMove(fromRow, fromCol, toRow, toCol) {
+        if (!this.selectedPiece || this.isPaused) return;
+
+        // Verificar si es un movimiento de promoción
+        const piece = this.board[fromRow][fromCol];
+        const isPromotion = (piece === 'P' && toRow === 0) || (piece === 'p' && toRow === 7);
+        
+        let promotion = null;
+        if (isPromotion) {
+            promotion = this.handlePromotion(toRow, toCol);
+            if (!promotion) return; // Usuario canceló la promoción
+        }
+
+        this.socket.emit('movePiece', {
+            gameId: this.gameId,
+            from: [fromRow, fromCol],
+            to: [toRow, toCol],
+            promotion: promotion,
+            playerId: this.playerId
         });
 
-        this.socket.on('gameJoined', (data) => {
-            this.gameId = data.gameId;
-            this.playerColor = data.color;
-            this.showGameScreen();
-            this.showMessage('Te has unido a la partida', 'success');
+        this.selectedPiece = null;
+        this.validMoves = [];
+        this.clearHighlights();
+    }
+
+    handlePromotion(row, col) {
+        // Crear modal de promoción
+        const modal = document.createElement('div');
+        modal.className = 'promotion-modal';
+        modal.style.left = `${col * 60 + 30}px`;
+        modal.style.top = `${row * 60 + 30}px`;
+
+        const pieces = this.playerColor === 'white' 
+            ? ['Q', 'R', 'B', 'N'] 
+            : ['q', 'r', 'b', 'n'];
+
+        const pieceSymbols = {
+            'Q': '♕', 'R': '♖', 'B': '♗', 'N': '♘',
+            'q': '♛', 'r': '♜', 'b': '♝', 'n': '♞'
+        };
+
+        pieces.forEach(piece => {
+            const pieceElement = document.createElement('div');
+            pieceElement.className = 'promotion-piece';
+            pieceElement.textContent = pieceSymbols[piece];
+            pieceElement.onclick = () => {
+                document.body.removeChild(modal);
+                this.promotionChoice = piece;
+            };
+            modal.appendChild(pieceElement);
         });
 
-        this.socket.on('gameStart', (data) => {
-            this.board = data.board;
-            this.renderBoard();
-            this.updateTimes(data.whiteTime, data.blackTime);
-            this.updateGameStatus(`Partida iniciada - Turno de ${data.currentTurn === 'white' ? 'Blancas' : 'Negras'}`);
-            this.updateTurnIndicator(data.currentTurn);
-            
-            // Iniciar temporizador si es nuestro turno
-            if (data.currentTurn === this.playerColor) {
-                this.startTimer();
+        document.body.appendChild(modal);
+
+        // Esperar a que el usuario elija
+        return new Promise((resolve) => {
+            const checkChoice = () => {
+                if (this.promotionChoice) {
+                    const choice = this.promotionChoice;
+                    this.promotionChoice = null;
+                    resolve(choice);
+                } else {
+                    setTimeout(checkChoice, 100);
+                }
+            };
+            checkChoice();
+        });
+    }
+
+    renderBoard() {
+        const boardElement = document.getElementById('chess-board');
+        boardElement.innerHTML = '';
+
+        const pieceSymbols = {
+            'P': '♙', 'R': '♖', 'N': '♘', 'B': '♗', 'Q': '♕', 'K': '♔',
+            'p': '♟', 'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚'
+        };
+
+        // Determinar orientación del tablero
+        const orientation = this.playerColor === 'white' ? 'normal' : 'flipped';
+
+        for (let row = 0; row < 8; row++) {
+            for (let col = 0; col < 8; col++) {
+                const displayRow = orientation === 'normal' ? row : 7 - row;
+                const displayCol = orientation === 'normal' ? col : 7 - col;
+
+                const square = document.createElement('div');
+                square.className = `square ${(displayRow + displayCol) % 2 === 0 ? 'light' : 'dark'}`;
+                square.dataset.row = displayRow;
+                square.dataset.col = displayCol;
+
+                const piece = this.board[displayRow][displayCol];
+                if (piece) {
+                    const pieceElement = document.createElement('div');
+                    pieceElement.className = 'piece';
+                    pieceElement.textContent = pieceSymbols[piece];
+                    pieceElement.setAttribute('data-piece', piece); // ← ESTA LÍNEA NUEVA
+                    pieceElement.draggable = true;
+                    
+                    pieceElement.addEventListener('dragstart', (e) => {
+                        if (this.canMovePiece(displayRow, displayCol)) {
+                            this.handlePieceSelect(displayRow, displayCol);
+                            e.dataTransfer.setData('text/plain', `${displayRow},${displayCol}`);
+                        } else {
+                            e.preventDefault();
+                        }
+                    });
+
+                    square.appendChild(pieceElement);
+                }
+
+                square.addEventListener('click', () => this.handleSquareClick(displayRow, displayCol));
+                square.addEventListener('dragover', (e) => e.preventDefault());
+                square.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    const [fromRow, fromCol] = e.dataTransfer.getData('text/plain').split(',').map(Number);
+                    this.handlePieceMove(fromRow, fromCol, displayRow, displayCol);
+                });
+
+                boardElement.appendChild(square);
             }
-        });
+        }
 
-        this.socket.on('moveMade', (data) => {
-            this.board = data.board;
-            this.renderBoard();
-            this.updateTimes(data.whiteTime, data.blackTime);
-            this.updateTurnIndicator(data.currentTurn);
-            
-            if (data.gameOver) {
-                this.handleGameOver(data.winner);
-            } else {
-                this.updateGameStatus(`Turno de ${data.currentTurn === 'white' ? 'Blancas' : 'Negras'}`);
-                
-                // Iniciar temporizador si es nuestro turno
-                if (data.currentTurn === this.playerColor) {
-                    this.startTimer();
+        this.highlightValidMoves();
+    }
+
+    highlightValidMoves() {
+        this.validMoves.forEach(move => {
+            const [toRow, toCol] = move.to;
+            const square = document.querySelector(`.square[data-row="${toRow}"][data-col="${toCol}"]`);
+            if (square) {
+                if (move.flags.includes('c') || move.flags.includes('e')) { // captura o captura al paso
+                    square.classList.add('valid-capture');
+                } else {
+                    square.classList.add('valid-move');
                 }
             }
         });
+    }
 
-        this.socket.on('timeUpdate', (data) => {
-            this.updateTimes(data.whiteTime, data.blackTime);
-            
-            if (data.gameOver) {
-                this.handleGameOver(data.winner, 'time');
-            }
-        });
-
-        this.socket.on('gameOver', (data) => {
-            this.handleGameOver(data.winner, data.reason);
-        });
-
-        this.socket.on('invalidMove', (data) => {
-            this.showMessage(`Movimiento inválido: ${data.reason}`, 'error');
-        });
-
-        this.socket.on('error', (message) => {
-            this.showMessage(message, 'error');
-        });
-
-        this.socket.on('playerDisconnected', () => {
-            this.showMessage('El oponente se ha desconectado', 'error');
-            setTimeout(() => {
-                this.leaveGame();
-            }, 3000);
-        });
-
-        this.socket.on('gamePaused', () => {
-            this.isPaused = true;
-            document.getElementById('pause-btn').classList.add('hidden');
-            document.getElementById('resume-btn').classList.remove('hidden');
-            this.showMessage('Juego pausado', 'info');
-        });
-
-        this.socket.on('gameResumed', () => {
-            this.isPaused = false;
-            document.getElementById('pause-btn').classList.remove('hidden');
-            document.getElementById('resume-btn').classList.add('hidden');
-            this.showMessage('Juego reanudado', 'info');
+    clearHighlights() {
+        document.querySelectorAll('.square').forEach(square => {
+            square.classList.remove('selected', 'valid-move', 'valid-capture', 'check');
         });
     }
+
+    // Agregar estos métodos al final de la clase ChessApp, antes del cierre de la llave }
 
     getSelectedTimeControl() {
         const activeTimeOption = document.querySelector('.time-option.active');
@@ -178,56 +387,6 @@ class ChessApp {
         document.querySelector('.time-option[data-time="5+0"]').classList.add('active');
     }
 
-    renderBoard() {
-        const boardElement = document.getElementById('chess-board');
-        boardElement.innerHTML = '';
-
-        const pieceSymbols = {
-            'P': '♙', 'R': '♖', 'N': '♘', 'B': '♗', 'Q': '♕', 'K': '♔',
-            'p': '♟', 'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚'
-        };
-
-        for (let row = 0; row < 8; row++) {
-            for (let col = 0; col < 8; col++) {
-                const square = document.createElement('div');
-                square.className = `square ${(row + col) % 2 === 0 ? 'light' : 'dark'}`;
-                square.dataset.row = row;
-                square.dataset.col = col;
-
-                const piece = this.board[row][col];
-                if (piece) {
-                    const pieceElement = document.createElement('div');
-                    pieceElement.className = 'piece';
-                    pieceElement.textContent = pieceSymbols[piece];
-                    pieceElement.draggable = true;
-                    
-                    pieceElement.addEventListener('dragstart', (e) => {
-                        if (this.canMovePiece(row, col)) {
-                            this.handlePieceSelect(row, col);
-                            e.dataTransfer.setData('text/plain', `${row},${col}`);
-                        } else {
-                            e.preventDefault();
-                        }
-                    });
-
-                    square.appendChild(pieceElement);
-                }
-
-                square.addEventListener('click', () => this.handleSquareClick(row, col));
-                square.addEventListener('dragover', (e) => e.preventDefault());
-                square.addEventListener('drop', (e) => {
-                    e.preventDefault();
-                    const [fromRow, fromCol] = e.dataTransfer.getData('text/plain').split(',').map(Number);
-                    this.handlePieceMove(fromRow, fromCol, row, col);
-                });
-
-                boardElement.appendChild(square);
-            }
-        }
-
-        this.highlightValidMoves();
-    }
-
     canMovePiece(row, col) {
         if (!this.playerColor || this.isPaused) return false;
         
@@ -242,20 +401,6 @@ class ChessApp {
         }
     }
 
-    handlePieceSelect(row, col) {
-        if (!this.canMovePiece(row, col)) return;
-
-        this.selectedPiece = { row, col };
-        this.clearHighlights();
-        
-        const square = document.querySelector(`.square[data-row="${row}"][data-col="${col}"]`);
-        square.classList.add('selected');
-
-        // Calcular movimientos válidos (simplificado)
-        this.calculateValidMoves(row, col);
-        this.highlightValidMoves();
-    }
-
     handleSquareClick(row, col) {
         if (this.selectedPiece) {
             this.handlePieceMove(this.selectedPiece.row, this.selectedPiece.col, row, col);
@@ -264,65 +409,38 @@ class ChessApp {
         }
     }
 
-    handlePieceMove(fromRow, fromCol, toRow, toCol) {
-        if (!this.selectedPiece || this.isPaused) return;
-
-        const timeSpent = Date.now() - this.lastMoveTime;
-        
-        this.socket.emit('movePiece', {
-            gameId: this.gameId,
-            from: [fromRow, fromCol],
-            to: [toRow, toCol],
-            timeSpent: timeSpent
-        });
-
-        this.selectedPiece = null;
-        this.validMoves = [];
-        this.clearHighlights();
-        this.lastMoveTime = Date.now();
-    }
-
-    calculateValidMoves(row, col) {
-        // En una implementación completa, aquí se calcularían los movimientos válidos
-        // Para este ejemplo, permitimos mover a cualquier casilla vacía
-        this.validMoves = [];
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 8; c++) {
-                if ((r !== row || c !== col) && !this.board[r][c]) {
-                    this.validMoves.push([r, c]);
-                }
-            }
-        }
-    }
-
-    highlightValidMoves() {
-        this.validMoves.forEach(([row, col]) => {
-            const square = document.querySelector(`.square[data-row="${row}"][data-col="${col}"]`);
-            if (square) {
-                if (this.board[row][col]) {
-                    square.classList.add('valid-capture');
-                } else {
-                    square.classList.add('valid-move');
-                }
-            }
-        });
-    }
-
-    clearHighlights() {
-        document.querySelectorAll('.square').forEach(square => {
-            square.classList.remove('selected', 'valid-move', 'valid-capture');
-        });
-    }
-
+    // Y mejora el método updateTimes para que sea más preciso:
     updateTimes(whiteTime, blackTime) {
-        document.getElementById('white-time').textContent = this.formatTime(whiteTime);
-        document.getElementById('black-time').textContent = this.formatTime(blackTime);
+        // Asegurarse de que los tiempos no sean negativos
+        const safeWhiteTime = Math.max(0, whiteTime);
+        const safeBlackTime = Math.max(0, blackTime);
+        
+        document.getElementById('white-time').textContent = this.formatTime(safeWhiteTime);
+        document.getElementById('black-time').textContent = this.formatTime(safeBlackTime);
+        
+        // Cambiar color cuando el tiempo es bajo (opcional)
+        if (safeWhiteTime < 30000) { // Menos de 30 segundos
+            document.getElementById('white-time').style.color = '#ff4444';
+        } else {
+            document.getElementById('white-time').style.color = '#ffd700';
+        }
+        
+        if (safeBlackTime < 30000) { // Menos de 30 segundos
+            document.getElementById('black-time').style.color = '#ff4444';
+        } else {
+            document.getElementById('black-time').style.color = '#ffd700';
+        }
     }
 
     formatTime(milliseconds) {
         const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
         const minutes = Math.floor(totalSeconds / 60);
         const seconds = totalSeconds % 60;
+        // Mostrar décimas de segundo cuando el tiempo es bajo
+        if (totalSeconds < 10) {
+            const deciseconds = Math.floor((milliseconds % 1000) / 100);
+            return `${minutes}:${seconds.toString().padStart(2, '0')}.${deciseconds}`;
+        }
         return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
     }
 
@@ -339,10 +457,6 @@ class ChessApp {
         indicator.style.borderRadius = '5px';
     }
 
-    startTimer() {
-        this.lastMoveTime = Date.now();
-    }
-
     pauseGame() {
         this.socket.emit('pauseGame', this.gameId);
     }
@@ -352,6 +466,7 @@ class ChessApp {
     }
 
     leaveGame() {
+        localStorage.removeItem('currentGameId');
         this.socket.disconnect();
         this.socket.connect();
         this.showLobbyScreen();
@@ -391,9 +506,100 @@ class ChessApp {
             messageElement.remove();
         }, 5000);
     }
+
+
+
+    // Mejorado: Manejar selección de pieza con movimientos válidos
+    handlePieceSelect(row, col) {
+        if (!this.canMovePiece(row, col)) return;
+
+        this.selectedPiece = { row, col };
+        this.clearHighlights();
+        
+        const square = document.querySelector(`.square[data-row="${row}"][data-col="${col}"]`);
+        square.classList.add('selected');
+
+        // Obtener movimientos válidos del servidor
+        this.getValidMoves(`${row},${col}`);
+    }
+
+    // Nuevo método para resaltar jaque
+    // Nuevo método para resaltar jaque - CORREGIDO
+    // En script.js, REEMPLAZA el método highlightCheck actual por este:
+
+    // Método highlightCheck CORREGIDO Y SIMPLIFICADO:
+    highlightCheck(isCheck) {
+        // Primero limpiar highlights anteriores
+        this.clearHighlights();
+        
+        if (isCheck && this.gameState) {
+            // Usar el turno actual del gameState para saber qué rey está en jaque
+            const currentTurn = this.gameState.currentTurn;
+            const kingToFind = currentTurn === 'white' ? 'K' : 'k';
+            
+            console.log(`Resaltando jaque para: ${currentTurn}, buscando: ${kingToFind}`);
+            
+            // Buscar el rey en el tablero
+            for (let row = 0; row < 8; row++) {
+                for (let col = 0; col < 8; col++) {
+                    if (this.board[row][col] === kingToFind) {
+                        const square = document.querySelector(`.square[data-row="${row}"][data-col="${col}"]`);
+                        if (square) {
+                            square.classList.add('check');
+                            console.log(`Rey en jaque encontrado en: ${row}, ${col}`);
+                        }
+                        return; // Salir después de encontrar el rey
+                    }
+                }
+            }
+        }
+    }
+
+    // Agrega este método auxiliar para obtener el turno actual:
+    getCurrentTurn() {
+        // Podemos determinar el turno basado en el color de las piezas que podemos mover
+        // O mantener un estado del turno actual en la clase
+        if (this.gameState && this.gameState.currentTurn) {
+            return this.gameState.currentTurn;
+        }
+        
+        // Fallback: determinar por las piezas que podemos mover
+        return this.playerColor === 'white' ? 'white' : 'black';
+    }
 }
 
 // Inicializar la aplicación cuando se carga la página
 document.addEventListener('DOMContentLoaded', () => {
     new ChessApp();
+    
+    // Agregar estilos CSS para el jaque después de que el DOM esté listo
+    const style = document.createElement('style');
+    style.textContent = `
+        .square.check {
+            background-color: #ff6b6b !important;
+            box-shadow: inset 0 0 10px rgba(255, 0, 0, 0.5);
+        }
+        
+        .promotion-modal {
+            position: absolute;
+            background: white;
+            border: 2px solid #333;
+            border-radius: 5px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .promotion-piece {
+            padding: 10px;
+            font-size: 24px;
+            cursor: pointer;
+            text-align: center;
+        }
+        
+        .promotion-piece:hover {
+            background: #f0f0f0;
+        }
+    `;
+    document.head.appendChild(style);
 });
