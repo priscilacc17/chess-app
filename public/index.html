@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ajedrez en Tiempo Real</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>Ajedrez en Tiempo Real</h1>
+        </header>
+
+        <div id="lobby" class="screen active">
+            <div class="lobby-container">
+                <h2>Crear o Unirse a una Partida</h2>
+                
+                <div class="time-controls">
+                    <h3>Control de Tiempo</h3>
+                    <div class="time-options">
+                        <button class="time-option" data-time="1+0">1 min</button>
+                        <button class="time-option" data-time="3+0">3 min</button>
+                        <button class="time-option" data-time="5+0">5 min</button>
+                        <button class="time-option" data-time="10+0">10 min</button>
+                    </div>
+                    
+                    <div class="custom-time">
+                        <h4>Personalizado</h4>
+                        <div class="time-inputs">
+                            <label>
+                                Minutos:
+                                <input type="number" id="custom-minutes" min="1" max="60" value="5">
+                            </label>
+                            <label>
+                                Incremento (seg):
+                                <input type="number" id="custom-increment" min="0" max="30" value="0">
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="game-actions">
+                    <button id="create-game-btn" class="btn primary">Crear Partida</button>
+                    
+                    <div class="join-game">
+                        <input type="text" id="game-id-input" placeholder="ID de Partida" maxlength="6">
+                        <button id="join-game-btn" class="btn secondary">Unirse</button>
+                    </div>
+                </div>
+
+                <div id="game-info" class="hidden">
+                    <p>ID de Partida: <span id="current-game-id"></span></p>
+                    <p>Comparte este ID con tu oponente</p>
+                </div>
+            </div>
+        </div>
+
+        <div id="game" class="screen">
+            <div class="game-container">
+                <div class="game-header">
+                    <div class="player-info black-player">
+                        <div class="player-name">Negras</div>
+                        <div class="player-time" id="black-time">05:00</div>
+                    </div>
+                    
+                    <div class="game-controls">
+                        <button id="pause-btn" class="btn small">Pausar</button>
+                        <button id="resume-btn" class="btn small hidden">Reanudar</button>
+                        <button id="leave-game-btn" class="btn small secondary">Salir</button>
+                    </div>
+                    
+                    <div class="player-info white-player">
+                        <div class="player-name">Blancas</div>
+                        <div class="player-time" id="white-time">05:00</div>
+                    </div>
+                </div>
+
+                <div class="chess-board-container">
+                    <div id="chess-board" class="chess-board"></div>
+                </div>
+
+                <div class="game-status">
+                    <div id="status-message">Esperando oponente...</div>
+                    <div id="turn-indicator"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="messages" class="messages-container"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
